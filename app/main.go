@@ -10,9 +10,9 @@ import (
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
-func startStream(port int, index int) {
+func startStream(ip string, port int, index int) {
     for {
-        err := ffmpeg.Input(fmt.Sprintf("udp://localhost:%d", port)).
+        err := ffmpeg.Input(fmt.Sprintf("udp://%d:%d", ip, port)).
         Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
             "c": "copy", 
             "f": "hls", 
@@ -53,11 +53,12 @@ func main() {
     var servePort = flag.Int("p", 3002, "Port to serve HLS streams")
     var startPort = flag.Int("s", 2220, "Starting port for UDP streams")
     var streamCount = flag.Int("n", 1, "Number of streams to handle")
+    var udpIp = flag.String("i", "localhost", "Udp ip")
 
     flag.Parse()
 
     for i := 0; i < *streamCount; i++ {
-        go startStream(*startPort + i, i)
+        go startStream(*udpIp, *startPort + i, i)
     }
 
     r := gin.Default()
