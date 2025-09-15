@@ -12,7 +12,7 @@ import (
 
 func startStream(ip string, port int, index int) {
     for {
-        err := ffmpeg.Input(fmt.Sprintf("udp://%d:%d", ip, port)).
+        err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d", ip, port)).
         Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
             "c": "copy", 
             "f": "hls", 
