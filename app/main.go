@@ -11,26 +11,28 @@ import (
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
+
 func startStream(ip string, port int, index int) {
-    file, err := os.OpenFile(fmt.Sprintf("logs/channel_%d", index), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    file, err := os.OpenFile(fmt.Sprintf("logs/channel_%d.log", index), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
     if err != nil {
         log.Fatal("Failed to open log file", err)
     }
 
     multiWriter := io.MultiWriter(os.Stdout, file)
-
+   
 
     for {
-        err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d", ip, port)).
-        Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
-            "c": "copy", 
-            "f": "hls", 
-            "hls_time": 4, 
-            "hls_list_size": 4, 
-            "hls_flags": "delete_segments+append_list+program_date_time",
-            "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.ts",
-        }).
-        OverWriteOutput().WithErrorOutput(multiWriter).Run()
+        err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
+            Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
+                "c": "copy", 
+                "f": "hls", 
+                "hls_time": 4, 
+                "hls_list_size": 4, 
+                "hls_flags": "delete_segments+append_list+program_date_time",
+                "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.ts",
+            }).
+            OverWriteOutput().WithErrorOutput(multiWriter).Run()
+
 
         log.Printf("Stream ended port %d index %d", port, index)
         if err != nil {
