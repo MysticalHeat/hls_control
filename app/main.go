@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 
@@ -11,6 +12,14 @@ import (
 )
 
 func startStream(ip string, port int, index int) {
+    file, err := os.OpenFile(fmt.Sprintf("logs/channel_%d", index), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+        log.Fatal("Failed to open log file", err)
+    }
+
+    multiWriter := io.MultiWriter(os.Stdout, file)
+
+
     for {
         err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d", ip, port)).
         Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
@@ -21,7 +30,7 @@ func startStream(ip string, port int, index int) {
             "hls_flags": "delete_segments+append_list+program_date_time",
             "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.ts",
         }).
-        OverWriteOutput().ErrorToStdOut().Run()
+        OverWriteOutput().WithErrorOutput(multiWriter).Run()
 
         log.Printf("Stream ended port %d index %d", port, index)
         if err != nil {
@@ -45,6 +54,15 @@ func main() {
 
     if os.IsNotExist(err) {
         err = os.Mkdir("streams", 0755)
+            if err != nil {
+                log.Fatal("Не удалось создать директорию:", err)
+            }
+    }
+
+    _, err = os.Stat("logs")
+
+    if os.IsNotExist(err) {
+        err = os.Mkdir("logs", 0755)
             if err != nil {
                 log.Fatal("Не удалось создать директорию:", err)
             }
