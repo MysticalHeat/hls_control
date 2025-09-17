@@ -6,13 +6,86 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
+type StreamEvent struct {
+    channelId int `json:"channelId"`
+    eventType string `json:"eventType"`
+}
 
-func startStream(ip string, port int, index int) {
+type Client struct {
+    send chan StreamEvent
+}
+
+type EventManager struct {
+    clients map[*Client]bool
+    mu sync.RWMutex
+}
+
+func NewEventManager() *EventManager {
+    return &EventManager{
+        clients: make(map[*Client]bool),
+    }
+}
+
+func (em *EventManager) AddClient(client *Client) {
+    em.mu.Lock()
+    defer em.mu.Unlock()
+    em.clients[client] = true
+}
+
+func (em *EventManager) RemoveClient(client *Client) {
+    em.mu.Lock()
+    defer em.mu.Unlock()
+    delete(em.clients,client)
+}
+
+func (em *EventManager) Broadcast(event StreamEvent) {
+    em.mu.RLock()
+    defer em.mu.RUnlock()
+
+    for client := range em.clients {
+        select {
+        case client.send <- event:
+        }
+    }
+}
+
+func (em *EventManager) SSEHandler (c *gin.Context) {
+    c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+
+	
+	client := &Client{
+		send: make(chan StreamEvent, 10), 
+	}
+
+    c.SSEvent("", "")
+    c.Writer.Flush()
+
+	em.AddClient(client)
+	defer em.RemoveClient(client)
+
+	go func() {
+		for event := range client.send {
+			c.SSEvent(event.eventType, event.channelId)
+			c.Writer.Flush()
+		}
+	}()
+
+	<-c.Done()
+	close(client.send)
+}
+
+
+func startStream(ip string, port int, index int, em *EventManager) {
     file, err := os.OpenFile(fmt.Sprintf("logs/channel_%d.log", index), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
     if err != nil {
         log.Fatal("Failed to open log file", err)
@@ -33,14 +106,37 @@ func startStream(ip string, port int, index int) {
             }).
             OverWriteOutput().WithErrorOutput(multiWriter).Run()
 
-
         log.Printf("Stream ended port %d index %d", port, index)
         if err != nil {
+            log.Print(err)
+        }
+
+        em.Broadcast(StreamEvent{channelId: index, eventType: "closed"})
+
+        walkErr := filepath.Walk("./streams", func(path string, info os.FileInfo, err error) error {
+            if err != nil {
+                return err
+            }
+
+            if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) {
+                removeErr := os.Remove(path)
+                if removeErr != nil {
+                    return removeErr
+                }
+            }
+            return nil
+        })
+
+        os.Remove(fmt.Sprintf("./streams/stream%d.m3u8", index))
+
+
+        if walkErr != nil {
             log.Print(err)
         }
     }
     
 }
+
 
 func main() {
 
@@ -77,13 +173,17 @@ func main() {
 
     flag.Parse()
 
+	em := NewEventManager()
+
     for i := 0; i < *streamCount; i++ {
-        go startStream(*udpIp, *startPort + i, i)
+        go startStream(*udpIp, *startPort + i, i, em)
     }
 
     r := gin.Default()
 
     r.Static("/streams", "./streams")
+
+    r.GET("/events", em.SSEHandler)
 
     err = r.Run(fmt.Sprintf(":%d", *servePort))
     log.Fatal(err)
