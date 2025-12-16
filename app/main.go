@@ -38,21 +38,28 @@ func (em *EventManager) AddClient(client *Client) {
     em.mu.Lock()
     defer em.mu.Unlock()
     em.clients[client] = true
+    log.Printf("[SSE] Client connected. Total clients: %d", len(em.clients))
 }
 
 func (em *EventManager) RemoveClient(client *Client) {
     em.mu.Lock()
     defer em.mu.Unlock()
     delete(em.clients,client)
+    log.Printf("[SSE] Client disconnected. Total clients: %d", len(em.clients))
 }
 
 func (em *EventManager) Broadcast(event StreamEvent) {
     em.mu.RLock()
     defer em.mu.RUnlock()
 
+    log.Printf("[SSE] Broadcasting event: type=%s, channelId=%d to %d clients", event.eventType, event.channelId, len(em.clients))
+    
     for client := range em.clients {
         select {
         case client.send <- event:
+            log.Printf("[SSE] Event sent to client successfully")
+        default:
+            log.Printf("[SSE] Failed to send event to client (channel full)")
         }
     }
 }
@@ -61,26 +68,51 @@ func (em *EventManager) SSEHandler (c *gin.Context) {
     c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 
+	log.Printf("[SSE] New client connecting from %s", c.ClientIP())
 	
 	client := &Client{
 		send: make(chan StreamEvent, 10), 
 	}
 
-    c.SSEvent("", "")
-    c.Writer.Flush()
-
 	em.AddClient(client)
-	defer em.RemoveClient(client)
+	
+	// Отправляем начальный комментарий для установки соединения
+	c.Writer.Write([]byte(": connected\n\n"))
+	c.Writer.Flush()
+
+	// Канал для сигнала о закрытии
+	done := make(chan bool)
 
 	go func() {
-		for event := range client.send {
-			c.SSEvent(event.eventType, event.channelId)
-			c.Writer.Flush()
+		log.Printf("[SSE] Started event sender goroutine for client %s", c.ClientIP())
+		for {
+			select {
+			case event, ok := <-client.send:
+				if !ok {
+					log.Printf("[SSE] Client channel closed for %s", c.ClientIP())
+					return
+				}
+				log.Printf("[SSE] Sending event to client %s: type=%s, channelId=%d", c.ClientIP(), event.eventType, event.channelId)
+				c.SSEvent(event.eventType, event.channelId)
+				c.Writer.Flush()
+			case <-done:
+				log.Printf("[SSE] Done signal received for %s", c.ClientIP())
+				return
+			}
 		}
 	}()
 
-	<-c.Done()
+	// Ждем закрытия соединения
+	<-c.Request.Context().Done()
+	log.Printf("[SSE] Client %s disconnected", c.ClientIP())
+	
+	// Сигнализируем горутине о завершении
+	close(done)
+	
+	// Удаляем клиента и закрываем канал
+	em.RemoveClient(client)
 	close(client.send)
 }
 
@@ -97,12 +129,23 @@ func startStream(ip string, port int, index int, em *EventManager) {
     for {
         err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
             Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
-                "c": "copy", 
+                // Video - copy without re-encoding
+                "c:v": "copy",
+                
+                // Audio re-encoding with sync for gap prevention
+                "c:a": "aac",
+                "b:a": "128k",
+                "ar": "44100",
+                "ac": "2",
+                "af": "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
+                
+                // HLS configuration with fMP4 for Chrome stability
                 "f": "hls", 
-                "hls_time": 4, 
-                "hls_list_size": 4, 
-                "hls_flags": "delete_segments+append_list+program_date_time",
-                "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.ts",
+                "hls_time": "4", 
+                "hls_list_size": "10", 
+                "hls_flags": "independent_segments+discont_start+split_by_time+delete_segments+append_list+program_date_time",
+                "hls_segment_type": "fmp4",
+                "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.m4s",
             }).
             OverWriteOutput().WithErrorOutput(multiWriter).Run()
 
@@ -118,7 +161,8 @@ func startStream(ip string, port int, index int, em *EventManager) {
                 return err
             }
 
-            if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) {
+            if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) && 
+               (strings.HasSuffix(info.Name(), ".m4s") || strings.HasSuffix(info.Name(), ".ts")) {
                 removeErr := os.Remove(path)
                 if removeErr != nil {
                     return removeErr
