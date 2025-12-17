@@ -15,8 +15,8 @@ import (
 )
 
 type StreamEvent struct {
-    channelId int `json:"channelId"`
-    eventType string `json:"eventType"`
+    ChannelId int `json:"channelId"`
+    EventType string `json:"eventType"`
 }
 
 type Client struct {
@@ -52,7 +52,7 @@ func (em *EventManager) Broadcast(event StreamEvent) {
     em.mu.RLock()
     defer em.mu.RUnlock()
 
-    log.Printf("[SSE] Broadcasting event: type=%s, channelId=%d to %d clients", event.eventType, event.channelId, len(em.clients))
+    log.Printf("[SSE] Broadcasting event: type=%s, channelId=%d to %d clients", event.EventType, event.ChannelId, len(em.clients))
     
     for client := range em.clients {
         select {
@@ -94,8 +94,8 @@ func (em *EventManager) SSEHandler (c *gin.Context) {
 					log.Printf("[SSE] Client channel closed for %s", c.ClientIP())
 					return
 				}
-				log.Printf("[SSE] Sending event to client %s: type=%s, channelId=%d", c.ClientIP(), event.eventType, event.channelId)
-				c.SSEvent(event.eventType, event.channelId)
+				log.Printf("[SSE] Sending event to client %s: type=%s, channelId=%d", c.ClientIP(), event.EventType, event.ChannelId)
+				c.SSEvent(event.EventType, event.ChannelId)
 				c.Writer.Flush()
 			case <-done:
 				log.Printf("[SSE] Done signal received for %s", c.ClientIP())
@@ -132,13 +132,8 @@ func startStream(ip string, port int, index int, em *EventManager) {
                 // Video - copy without re-encoding
                 "c:v": "copy",
                 
-                // Audio re-encoding with sync for gap prevention
-                "c:a": "aac",
-                "b:a": "128k",
-                "ar": "44100",
-                "ac": "2",
-                "af": "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
-                "preset": "veryfast",
+                // Remove audio track
+                "an": "",
                 
                 // HLS configuration with fMP4 for Chrome stability
                 "f": "hls", 
@@ -146,6 +141,7 @@ func startStream(ip string, port int, index int, em *EventManager) {
                 "hls_list_size": "10", 
                 "hls_flags": "independent_segments+discont_start+split_by_time+delete_segments+append_list+program_date_time",
                 "hls_segment_type": "fmp4",
+                "hls_fmp4_init_filename": fmt.Sprintf("stream_%d_init.mp4", index),
                 "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.m4s",
             }).
             OverWriteOutput().WithErrorOutput(multiWriter).Run()
@@ -155,7 +151,7 @@ func startStream(ip string, port int, index int, em *EventManager) {
             log.Print(err)
         }
 
-        em.Broadcast(StreamEvent{channelId: index, eventType: "closed"})
+        em.Broadcast(StreamEvent{ChannelId: index, EventType: "closed"})
 
         walkErr := filepath.Walk("./streams", func(path string, info os.FileInfo, err error) error {
             if err != nil {
@@ -163,7 +159,7 @@ func startStream(ip string, port int, index int, em *EventManager) {
             }
 
             if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) && 
-               (strings.HasSuffix(info.Name(), ".m4s") || strings.HasSuffix(info.Name(), ".ts")) {
+               (strings.HasSuffix(info.Name(), ".m4s") || strings.HasSuffix(info.Name(), ".ts") || strings.HasSuffix(info.Name(), "_init.mp4")) {
                 removeErr := os.Remove(path)
                 if removeErr != nil {
                     return removeErr

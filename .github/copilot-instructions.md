@@ -27,29 +27,39 @@ This is a Go-based HLS (HTTP Live Streaming) control server that receives UDP st
 
 -   Infinite loop wrapper around FFmpeg process
 -   Logs to both stdout and `logs/channel_N.log`
--   Auto-cleanup on stream end: removes `stream_N*.ts` and `stream_N.m3u8`
+-   Auto-cleanup on stream end: removes `stream_N*.m4s`, `stream_N_init.mp4` and `stream_N.m3u8`
 -   Uses `ffmpeg-go` library, NOT exec/Command
+-   Cleanup pattern matches: `.m4s`, `.ts`, and `_init.mp4` suffixes with channel prefix
 
 ## Critical Conventions
 
 ### File Naming Patterns
 
 -   HLS playlists: `streams/streamN.m3u8` (where N = channel index)
--   HLS segments: `streams/stream_N_%03d.ts` (3-digit counter)
+-   HLS segments: `streams/stream_N_%03d.m4s` (3-digit counter, fMP4 format)
+-   Init segments: `stream_N_init.mp4` (per-channel initialization segments)
 -   Logs: `logs/channel_N.log`
 
 ### FFmpeg Configuration
 
-Always use these exact flags in `startStream`:
+**Current configuration (fMP4, video-only):**
 
 ```go
-"c": "copy",              // No re-encoding
+"c:v": "copy",            // Video copy without re-encoding
+"an": "",                 // Remove audio track completely
 "f": "hls",
-"hls_time": 4,            // 4-second segments
-"hls_list_size": 4,       // Keep last 4 segments
-"hls_flags": "delete_segments+append_list+program_date_time",
-"hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.ts",
+"hls_time": "4",          // 4-second segments
+"hls_list_size": "10",    // Keep last 10 segments
+"hls_flags": "independent_segments+discont_start+split_by_time+delete_segments+append_list+program_date_time",
+"hls_segment_type": "fmp4",  // Fragmented MP4 for Chrome stability
+"hls_fmp4_init_filename": fmt.Sprintf("stream_%d_init.mp4", index),  // Per-channel init files
+"hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.m4s",
 ```
+
+**Critical notes:**
+- Each stream has its own `stream_N_init.mp4` to avoid race conditions
+- Audio is stripped (`"an": ""`) - video-only streams
+- fMP4 format (`.m4s` segments) instead of MPEG-TS (`.ts`)
 
 ### Concurrency Pattern
 
