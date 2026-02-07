@@ -132,8 +132,12 @@ func startStream(ip string, port int, index int, em *EventManager) {
                 // Video - copy without re-encoding
                 "c:v": "copy",
                 
-                // Remove audio track
-                "an": "",
+                "c:a": "aac",
+                "b:a": "128k",
+                "ar": "44100",
+                "ac": "2",
+                "af": "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
+                "preset": "veryfast",
                 
                 // HLS configuration with fMP4 for Chrome stability
                 "f": "hls", 
