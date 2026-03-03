@@ -6,9 +6,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
@@ -117,6 +119,57 @@ func (em *EventManager) SSEHandler (c *gin.Context) {
 }
 
 
+// processRegistry tracks all running ffmpeg child processes so they can be
+// killed cleanly when hls_control exits (SIGTERM/SIGINT).
+var (
+    procMu    sync.Mutex
+    procList  []*os.Process
+)
+
+func registerProcess(p *os.Process) {
+    procMu.Lock()
+    procList = append(procList, p)
+    procMu.Unlock()
+}
+
+func unregisterProcess(p *os.Process) {
+    procMu.Lock()
+    defer procMu.Unlock()
+    for i, proc := range procList {
+        if proc.Pid == p.Pid {
+            procList = append(procList[:i], procList[i+1:]...)
+            return
+        }
+    }
+}
+
+func killAllProcesses() {
+    procMu.Lock()
+    defer procMu.Unlock()
+    for _, p := range procList {
+        _ = p.Signal(syscall.SIGTERM)
+    }
+}
+
+func cleanupStream(index int) {
+    walkErr := filepath.Walk("./streams", func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) &&
+           (strings.HasSuffix(info.Name(), ".m4s") || strings.HasSuffix(info.Name(), ".ts") || strings.HasSuffix(info.Name(), "_init.mp4")) {
+            if removeErr := os.Remove(path); removeErr != nil {
+                log.Printf("cleanup stream_%d: failed to remove %s: %v", index, path, removeErr)
+            }
+        }
+        return nil
+    })
+    os.Remove(fmt.Sprintf("./streams/stream%d.m3u8", index))
+    if walkErr != nil {
+        log.Printf("cleanup stream_%d walk error: %v", index, walkErr)
+    }
+}
+
 func startStream(ip string, port int, index int, em *EventManager) {
     file, err := os.OpenFile(fmt.Sprintf("logs/channel_%d.log", index), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
     if err != nil {
@@ -127,57 +180,40 @@ func startStream(ip string, port int, index int, em *EventManager) {
    
 
     for {
-        err := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
+        cmd := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
             Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
-                // Video - copy without re-encoding
-                "c:v": "copy",
-                
-                "c:a": "aac",
-                "b:a": "128k",
-                "ar": "44100",
-                "ac": "2",
-                "af": "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
-                "preset": "veryfast",
-                
+                "c:v": "copy",  // Video - copy without re-encoding
+
                 // HLS configuration with fMP4 for Chrome stability
-                "f": "hls", 
-                "hls_time": "4", 
-                "hls_list_size": "10", 
-                "hls_flags": "independent_segments+discont_start+split_by_time+delete_segments+append_list+program_date_time",
+                "an": "",             // audio disabled — muted in browser, aresample causes segment timing jitter
+                "f": "hls",
+                "hls_time": "2",       // 2s segments: minimum stable duration for HLS
+                "hls_list_size": "6",  // 6 segments = 12s window — enough margin if browser is slow
+                "hls_flags": "independent_segments+split_by_time+delete_segments+append_list+program_date_time",
                 "hls_segment_type": "fmp4",
                 "hls_fmp4_init_filename": fmt.Sprintf("stream_%d_init.mp4", index),
                 "hls_segment_filename": fmt.Sprintf("./streams/stream_%d", index) + "_%03d.m4s",
             }).
-            OverWriteOutput().WithErrorOutput(multiWriter).Run()
+            OverWriteOutput().WithErrorOutput(multiWriter).Compile()
+
+        var runErr error
+        if startErr := cmd.Start(); startErr != nil {
+            log.Printf("Stream port %d index %d failed to start: %v", port, index, startErr)
+            runErr = startErr
+        } else {
+            registerProcess(cmd.Process)
+            runErr = cmd.Wait()
+            unregisterProcess(cmd.Process)
+        }
 
         log.Printf("Stream ended port %d index %d", port, index)
-        if err != nil {
-            log.Print(err)
+        if runErr != nil {
+            log.Print(runErr)
         }
 
         em.Broadcast(StreamEvent{ChannelId: index, EventType: "closed"})
 
-        walkErr := filepath.Walk("./streams", func(path string, info os.FileInfo, err error) error {
-            if err != nil {
-                return err
-            }
-
-            if strings.HasPrefix(info.Name(), fmt.Sprintf("stream_%d", index)) && 
-               (strings.HasSuffix(info.Name(), ".m4s") || strings.HasSuffix(info.Name(), ".ts") || strings.HasSuffix(info.Name(), "_init.mp4")) {
-                removeErr := os.Remove(path)
-                if removeErr != nil {
-                    return removeErr
-                }
-            }
-            return nil
-        })
-
-        os.Remove(fmt.Sprintf("./streams/stream%d.m3u8", index))
-
-
-        if walkErr != nil {
-            log.Print(err)
-        }
+        cleanupStream(index)
     }
     
 }
@@ -219,6 +255,21 @@ func main() {
     flag.Parse()
 
 	em := NewEventManager()
+
+    // Graceful shutdown: kill all ffmpeg children on SIGTERM/SIGINT
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+    go func() {
+        <-quit
+        log.Println("Shutting down: terminating ffmpeg processes...")
+        killAllProcesses()
+        os.Exit(0)
+    }()
+
+    // Удаляем остатки предыдущих запусков перед стартом
+    for i := 0; i < *streamCount; i++ {
+        cleanupStream(i)
+    }
 
     for i := 0; i < *streamCount; i++ {
         go startStream(*udpIp, *startPort + i, i, em)
