@@ -183,9 +183,10 @@ func startStream(ip string, port int, index int, em *EventManager) {
         cmd := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
             Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
                 "c:v": "copy",  // Video - copy without re-encoding
+                "c:a": "copy",  // Audio - copy AAC as-is
+                "bsf:a": "aac_adtstoasc", // Convert ADTS AAC (MPEG-TS) → ASC (fMP4/MP4)
 
                 // HLS configuration with fMP4 for Chrome stability
-                "an": "",             // audio disabled — muted in browser, aresample causes segment timing jitter
                 "f": "hls",
                 "hls_time": "2",       // 2s segments: minimum stable duration for HLS
                 "hls_list_size": "6",  // 6 segments = 12s window — enough margin if browser is slow
