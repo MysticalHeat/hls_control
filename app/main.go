@@ -180,7 +180,7 @@ func startStream(ip string, port int, index int, em *EventManager) {
    
 
     for {
-        cmd := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=60000000", ip, port)).
+        cmd := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=5000000", ip, port)).
             Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
                 "c:v": "copy",  // Video - copy without re-encoding
                 "c:a": "copy",  // Audio - copy AAC as-is
