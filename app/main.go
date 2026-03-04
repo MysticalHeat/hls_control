@@ -183,8 +183,10 @@ func startStream(ip string, port int, index int, em *EventManager) {
         cmd := ffmpeg.Input(fmt.Sprintf("udp://%s:%d?timeout=5000000", ip, port)).
             Output(fmt.Sprintf("./streams/stream%d.m3u8", index), ffmpeg.KwArgs{
                 "c:v": "copy",  // Video - copy without re-encoding
-                "c:a": "copy",  // Audio - copy AAC as-is
-                "bsf:a": "aac_adtstoasc", // Convert ADTS AAC (MPEG-TS) → ASC (fMP4/MP4)
+                "c:a": "aac",   // Transcode to AAC (compatible with all HLS players)
+                "ac":  "2",     // Stereo
+                "ar":  "44100", // Sample rate 44.1kHz
+                "b:a": "128k",  // Bitrate for audio
 
                 // HLS configuration with fMP4 for Chrome stability
                 "f": "hls",
